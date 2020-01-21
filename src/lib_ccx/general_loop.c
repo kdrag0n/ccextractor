@@ -632,7 +632,7 @@ void delete_datalist(struct demuxer_data *list)
 }
 int process_data(struct encoder_ctx *enc_ctx, struct lib_cc_decode *dec_ctx, struct demuxer_data *data_node)
 {
-	size_t got; // Means 'consumed' from buffer actually
+	size_t got = 0; // Means 'consumed' from buffer actually
 	int ret = 0;
 	static LLONG last_pts = 0x01FFFFFFFFLL;
 	struct cc_subtitle *dec_sub = &dec_ctx->dec_sub;
