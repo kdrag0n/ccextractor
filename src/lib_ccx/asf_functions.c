@@ -16,7 +16,7 @@ asf_data asf_data_container;
 
 uint32_t asf_readval(void *val, int ltype)
 {
-	uint32_t rval;
+	uint32_t rval = 0;
 
 	switch (ltype)
 	{
