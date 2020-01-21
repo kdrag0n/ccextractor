@@ -692,6 +692,7 @@ const char *disassemble_code(const enum control_code code, unsigned int *length)
 			return _1528_ASSEMBLY;
 		default:
 			fatal(-1, "Cannot disassemble code");
+			return NULL;
 	}
 }
 
@@ -929,6 +930,7 @@ unsigned get_first_byte(const unsigned char channel, const enum control_code cod
 			}
 		default:
 			fatal(-1, "[SCC] Cannot get first byte for code");
+			return 0x00;
 	}
 }
 
@@ -1098,6 +1100,7 @@ unsigned get_second_byte(const enum control_code code)
 			return 0x7f;
 		default:
 			fatal(-1, "[SCC] Unknown control code");
+			return 0x00;
 	}
 }
 
@@ -1494,8 +1497,9 @@ enum control_code get_preamble_code(const unsigned char row, const unsigned char
 			break;
 		default:
 			fatal(-1, "Invalid row number.");
-
 	}
+
+	return 0;
 }
 
 enum control_code get_tab_offset_code(const unsigned char column)
@@ -1529,6 +1533,7 @@ enum control_code get_font_code(enum font_bits font) {
 			return IU;
 		default:
 			fatal(-1, "Unknown font");
+			return 0;
 	}
 }
 
