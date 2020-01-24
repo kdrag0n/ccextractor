@@ -390,9 +390,10 @@ int write_subtitle_file_footer(struct encoder_ctx *ctx, struct ccx_s_write *out)
 			}
 			break;
 		case CCX_OF_SCC:
+			write_scc_footer(ctx);
+			break;
 		case CCX_OF_CCD:
-			// TODO \n vs \r\n
-			ret = write(out->fh, "\n", 1);
+			write_ccd_footer(ctx);
 			break;
 		default: // Nothing to do, no footer on this format
 			break;

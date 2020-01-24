@@ -45,6 +45,14 @@ struct ccx_mcc_caption_time
     unsigned int frame;
 };
 
+struct ccx_scc_timecode
+{
+	unsigned int hour;
+	unsigned int minute;
+	unsigned int second;
+	float frame;
+};
+
 /**
  * Context of encoder, This structure gives single interface
  * to all encoder
@@ -157,6 +165,10 @@ struct encoder_ctx
 
 	// OCR in SPUPNG
 	int nospupngocr;
+
+	// SCC state
+	struct ccx_scc_timecode *scc_last_end_time;
+	int scc_last_channel;
 };
 
 #define INITIAL_ENC_BUFFER_CAPACITY	2048

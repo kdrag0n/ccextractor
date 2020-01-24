@@ -3,9 +3,10 @@
 
 #include "lib_ccx.h"
 #include <stdbool.h>
+#include <math.h>
 
 // Adds a parity bit if needed
-unsigned char odd_parity(const unsigned char byte)
+unsigned char odd_parity(int byte)
 {
 	return byte | !(cc608_parity(byte) % 2) << 7;
 }
@@ -392,14 +393,14 @@ const char *disassemble_code(const enum control_code code, unsigned int *length)
 	return assembly;
 }
 
-bool is_odd_channel(const unsigned char channel)
+bool is_odd_channel(int channel)
 {
 	// generally (as per the reference) channel 1 and 3 and channel 2 and 4
 	// behave in a similar way
 	return channel % 2 == 1;
 }
 
-unsigned get_first_byte(const unsigned char channel, const enum control_code code)
+unsigned get_first_byte(int channel, const enum control_code code)
 {
 	const struct control_code_info *info = &control_codes[code];
 
@@ -436,7 +437,7 @@ void check_padding(const int fd, bool disassemble, unsigned int *bytes_written)
 	}
 }
 
-void write_character(const int fd, const unsigned char character, const bool disassemble, unsigned int *bytes_written)
+void write_character(const int fd, int character, bool disassemble, unsigned int *bytes_written)
 {
 	if (disassemble)
 	{
@@ -459,7 +460,7 @@ void write_character(const int fd, const unsigned char character, const bool dis
  *                      (disassembly) format. It's purpose is to know if
  *                      padding should be added
  */
-void write_control_code(const int fd, const unsigned char channel, const enum control_code code, const bool disassemble, unsigned int *bytes_written)
+void write_control_code(const int fd, int channel, const enum control_code code, bool disassemble, unsigned int *bytes_written)
 {
 	check_padding(fd, disassemble, bytes_written);
 	if (disassemble)
@@ -486,12 +487,12 @@ void write_control_code(const int fd, const unsigned char channel, const enum co
  * //TODO: Preamble code need to take into account font as well
  *
  */
-enum control_code get_preamble_code(const unsigned char row, const unsigned char column)
+enum control_code get_preamble_code(int row, int column)
 {
 	return PREAMBLE_CC_START + 1 + (row * 8) + (column / 4);
 }
 
-enum control_code get_tab_offset_code(const unsigned char column)
+enum control_code get_tab_offset_code(int column)
 {
 	int offset = column % 4;
 	return offset == 0 ? 0 : TAB_OFFSET_START + offset;
@@ -518,35 +519,70 @@ enum control_code get_font_code(enum font_bits font, enum ccx_decoder_608_color_
 	}
 }
 
-void add_timestamp(int fd, LLONG time, const bool disassemble)
+struct ccx_scc_timecode get_timecode(LLONG time)
 {
-	write(fd, "\n\n", disassemble ? 1 : 2);
 	unsigned hour, minute, second, milli;
 	millis_to_time(time, &hour, &minute, &second, &milli);
-
-	// SMPTE format
 	float frame = milli / 29.97;
-	fdprintf(fd, "%02u:%02u:%02u:%02.f\t", hour, minute, second, frame);
+
+	return (struct ccx_scc_timecode){
+		.hour = hour,
+		.minute = minute,
+		.second = second,
+		.frame = frame
+	};
 }
 
-void clear_screen(int fd, LLONG end_time, const unsigned char channel, const bool disassemble)
+bool timecode_equals(struct ccx_scc_timecode a, struct ccx_scc_timecode b)
 {
-	add_timestamp(fd, end_time, disassemble);
+	return a.hour == b.hour &&
+		a.minute == b.minute &&
+		a.second == b.second &&
+		fabsf(a.frame - b.frame) < 3;
+}
+
+void write_timecode(int fd, struct ccx_scc_timecode tc, bool disassemble)
+{
+	write(fd, "\n\n", disassemble ? 1 : 2);
+
+	// SMPTE format
+	fdprintf(fd, "%02u:%02u:%02u:%02.f\t", tc.hour, tc.minute, tc.second, tc.frame);
+}
+
+void write_timestamp(int fd, LLONG time, bool disassemble, bool load_offset)
+{
+	if (load_offset)
+		time = MAX(time - 1150, 0);
+
+	struct ccx_scc_timecode timecode = get_timecode(time);
+	write_timecode(fd, timecode, disassemble);
+}
+
+void clear_screen(int fd, struct ccx_scc_timecode end_time, int channel, bool disassemble)
+{
 	unsigned int bytes_written = 0;
+	write_timecode(fd, end_time, disassemble);
 	write_control_code(fd, channel, EDM, disassemble, &bytes_written);
 }
 
-int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encoder_ctx *context, const char disassemble)
+int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encoder_ctx *context, bool disassemble)
 {
 	unsigned int bytes_written = 0;
 	enum font_bits current_font = FONT_REGULAR;
 	enum ccx_decoder_608_color_code current_color = COL_WHITE;
 	unsigned char current_row = 14;
 	unsigned char current_column = 0;
+	int fd = context->out->fh;
+	int channel = data->channel;
 
-	// 1. Load the caption
-	add_timestamp(context->out->fh, data->start_time, disassemble);
-	write_control_code(context->out->fh, data->channel, RCL, disassemble, &bytes_written);
+	// 1. Clear the last caption if necessary
+	struct ccx_scc_timecode start_tc = get_timecode(data->start_time);
+	if (context->scc_last_end_time && !timecode_equals(*context->scc_last_end_time, start_tc))
+		clear_screen(fd, *context->scc_last_end_time, context->scc_last_channel, disassemble);
+
+	// 2. Load the new caption ahead-of-time
+	write_timestamp(fd, data->start_time, disassemble, true);
+	write_control_code(fd, channel, RCL, disassemble, &bytes_written);
 	for (uint8_t row = 0; row < 15; ++row)
 	{
 		// If there is nothing to display on this row, skip it.
@@ -594,29 +630,34 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 					tab_offset_code = get_tab_offset_code(column);
 				}
 
-				write_control_code(context->out->fh, data->channel, position_code, disassemble, &bytes_written);
+				write_control_code(fd, channel, position_code, disassemble, &bytes_written);
 				if (tab_offset_code)
-					write_control_code(context->out->fh, data->channel, tab_offset_code, disassemble, &bytes_written);
+					write_control_code(fd, channel, tab_offset_code, disassemble, &bytes_written);
 				if (switch_font || switch_color)
-					write_control_code(context->out->fh, data->channel, font_code, disassemble, &bytes_written);
+					write_control_code(fd, channel, font_code, disassemble, &bytes_written);
 
 				current_row = row;
 				current_column = column;
 				current_font = data->fonts[row][column];
 				current_color = data->colors[row][column];
 			}
-			write_character(context->out->fh, data->characters[row][column], disassemble, &bytes_written);
+			write_character(fd, data->characters[row][column], disassemble, &bytes_written);
 			++current_column;
 		}
-		check_padding(context->out->fh, disassemble, &bytes_written);
+		check_padding(fd, disassemble, &bytes_written);
 	}
 
-	// 2. Show the caption
-	write_control_code(context->out->fh, data->channel, EOC, disassemble, &bytes_written);
-	write_control_code(context->out->fh, data->channel, ENM, disassemble, &bytes_written);
+	// 3. Show the caption at the target time
+	write_timestamp(fd, data->start_time, disassemble, false);
+	write_control_code(fd, channel, RCL, disassemble, &bytes_written);
+	write_control_code(fd, channel, EOC, disassemble, &bytes_written);
+	write_control_code(fd, channel, ENM, disassemble, &bytes_written);
 
-	// 3. Clear the caption
-	clear_screen(context->out->fh, data->end_time, data->channel, disassemble);
+	// 4. Save data from this caption
+	if (!context->scc_last_end_time)
+		context->scc_last_end_time = malloc(sizeof(*context->scc_last_end_time));
+	*context->scc_last_end_time = get_timecode(data->end_time);
+	context->scc_last_channel = channel;
 
 	return 1;
 }
@@ -635,4 +676,20 @@ int write_cc_buffer_as_ccd(const struct eia608_screen *data, struct encoder_ctx 
 int write_cc_buffer_as_scc(const struct eia608_screen *data, struct encoder_ctx *context)
 {
 	return write_cc_buffer_as_scenarist(data, context, false);
+}
+
+void write_scenarist_footer(struct encoder_ctx *context, bool disassemble)
+{
+	if (context->scc_last_end_time)
+		clear_screen(context->out->fh, *context->scc_last_end_time, context->scc_last_channel, disassemble);
+}
+
+void write_scc_footer(struct encoder_ctx *context)
+{
+	write_scenarist_footer(context, false);
+}
+
+void write_ccd_footer(struct encoder_ctx *context)
+{
+	write_scenarist_footer(context, true);
 }
