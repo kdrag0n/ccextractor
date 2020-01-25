@@ -386,7 +386,7 @@ enum control_code color_codes[COL_MAX] = {
 	[COL_TRANSPARENT] = Wh,
 };
 
-const char *disassemble_code(const enum control_code code, unsigned int *length)
+char *disassemble_code(enum control_code code, unsigned int *length)
 {
 	char *assembly = control_codes[code].assembly;
 	*length = strlen(assembly);
@@ -400,7 +400,7 @@ bool is_odd_channel(int channel)
 	return channel % 2 == 1;
 }
 
-unsigned get_first_byte(int channel, const enum control_code code)
+unsigned get_first_byte(int channel, enum control_code code)
 {
 	const struct control_code_info *info = &control_codes[code];
 
@@ -410,12 +410,12 @@ unsigned get_first_byte(int channel, const enum control_code code)
 		return info->byte1_even;
 }
 
-unsigned get_second_byte(const enum control_code code)
+unsigned get_second_byte(enum control_code code)
 {
 	return control_codes[code].byte2;
 }
 
-void add_padding(int fd, const char disassemble)
+void add_padding(int fd, char disassemble)
 {
 
 	if (disassemble)
@@ -428,7 +428,7 @@ void add_padding(int fd, const char disassemble)
 	}
 }
 
-void check_padding(const int fd, bool disassemble, unsigned int *bytes_written)
+void check_padding(int fd, bool disassemble, unsigned int *bytes_written)
 {
 	if (*bytes_written % 2 == 1)
 	{
@@ -437,7 +437,7 @@ void check_padding(const int fd, bool disassemble, unsigned int *bytes_written)
 	}
 }
 
-void write_character(const int fd, int character, bool disassemble, unsigned int *bytes_written)
+void write_character(int fd, int character, bool disassemble, unsigned int *bytes_written)
 {
 	if (disassemble)
 	{
@@ -460,7 +460,7 @@ void write_character(const int fd, int character, bool disassemble, unsigned int
  *                      (disassembly) format. It's purpose is to know if
  *                      padding should be added
  */
-void write_control_code(const int fd, int channel, const enum control_code code, bool disassemble, unsigned int *bytes_written)
+void write_control_code(int fd, int channel, enum control_code code, bool disassemble, unsigned int *bytes_written)
 {
 	check_padding(fd, disassemble, bytes_written);
 	if (disassemble)
