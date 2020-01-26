@@ -5,11 +5,7 @@
 #include <stdbool.h>
 #include <math.h>
 
-// Adds a parity bit if needed
-unsigned char odd_parity(int byte)
-{
-	return byte | !(cc608_parity(byte) % 2) << 7;
-}
+#define FPS 29.97
 
 // TODO: deal with "\n" vs "\r\n"
 
@@ -386,6 +382,12 @@ enum control_code color_codes[COL_MAX] = {
 	[COL_TRANSPARENT] = Wh,
 };
 
+// Adds a parity bit if needed
+unsigned char odd_parity(int byte)
+{
+	return byte | !(cc608_parity(byte) % 2) << 7;
+}
+
 char *disassemble_code(enum control_code code, unsigned int *length)
 {
 	char *assembly = control_codes[code].assembly;
@@ -415,66 +417,90 @@ unsigned get_second_byte(enum control_code code)
 	return control_codes[code].byte2;
 }
 
-void add_padding(int fd, char disassemble)
+void buf_write(char **buf, size_t *len, const char *str, size_t write_bytes)
+{
+	memcpy(*buf, str, MIN(*len, write_bytes));
+	*buf += write_bytes;
+	*len -= write_bytes;
+}
+
+void buf_printf(char **buf, size_t *len, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	int written = vsnprintf(*buf, *len, format, args);
+	va_end(args);
+
+	*buf += written;
+	*len -= written;
+}
+
+char *buf_init(struct encoder_ctx *context, size_t *len)
+{
+	char *buf = context->subline;
+	*len = SUBLINESIZE;
+	memset(buf, 0, *len);
+
+	return buf;
+}
+
+void add_padding(char **buf, size_t *len, char disassemble)
 {
 
 	if (disassemble)
 	{
-		write(fd, "_", 1);
+		buf_write(buf, len, "_", 1);
 	}
 	else
 	{
-		write(fd, "80", 2); // 0x80 == odd_parity(0x00)
+		buf_write(buf, len, "80", 2); // 0x80 == odd_parity(0x00)
 	}
 }
 
-void check_padding(int fd, bool disassemble, unsigned int *bytes_written)
+void check_padding(char **buf, size_t *len, bool disassemble, unsigned int *bytes_written)
 {
 	if (*bytes_written % 2 == 1)
 	{
-		add_padding(fd, disassemble);
+		add_padding(buf, len, disassemble);
 		++ *bytes_written;
 	}
 }
 
-void write_character(int fd, int character, bool disassemble, unsigned int *bytes_written)
+void write_character(char **buf, size_t *len, int character, bool disassemble, unsigned int *bytes_written)
 {
 	if (disassemble)
 	{
-		write(fd, &character, 1);
+		buf_write(buf, len, (char *)&character, 1);
 	}
 	else
 	{
 		if (*bytes_written % 2 == 0)
-			write(fd, " ", 1);
+			buf_write(buf, len, " ", 1);
 
-		fdprintf(fd, "%02x", odd_parity(character));
+		buf_printf(buf, len, "%02x", odd_parity(character));
 	}
 	++ *bytes_written; // increment int pointed to by (unsigned int *) bytes_written
 }
 
 /**
- * @param bytes_written Number of control codes written, this doesn't
- *                      correspond to the actual number of bytes written on
- *                      disk. It is the same with the scc and ccd
- *                      (disassembly) format. It's purpose is to know if
- *                      padding should be added
+ * @param bytes_written Number of content bytes written, not serialized bytes.
+ * 						Used to determine whether to add padding.
  */
-void write_control_code(int fd, int channel, enum control_code code, bool disassemble, unsigned int *bytes_written)
+void write_control_code(char **buf, size_t *len, int channel, enum control_code code, bool disassemble, unsigned int *bytes_written)
 {
-	check_padding(fd, disassemble, bytes_written);
+	check_padding(buf, len, disassemble, bytes_written);
 	if (disassemble)
 	{
 		unsigned int length;
 		const char *assembly_code = disassemble_code(code, &length);
-		write(fd, assembly_code, length);
+		buf_write(buf, len, assembly_code, length);
 	}
 	else
 	{
 		if (*bytes_written % 2 == 0)
-			write(fd, " ", 1);
+			buf_write(buf, len, " ", 1);
 
-		fdprintf(fd, "%02x%02x", odd_parity(get_first_byte(channel, code)), odd_parity(get_second_byte(code)));
+		buf_printf(buf, len, "%02x%02x", odd_parity(get_first_byte(channel, code)), odd_parity(get_second_byte(code)));
 	}
 	*bytes_written += 2;
 }
@@ -529,7 +555,8 @@ struct ccx_scc_timecode get_timecode(LLONG time)
 		.hour = hour,
 		.minute = minute,
 		.second = second,
-		.frame = frame
+		.frame = frame,
+		.ts = time
 	};
 }
 
@@ -549,20 +576,18 @@ void write_timecode(int fd, struct ccx_scc_timecode tc, bool disassemble)
 	fdprintf(fd, "%02u:%02u:%02u:%02.f\t", tc.hour, tc.minute, tc.second, tc.frame);
 }
 
-void write_timestamp(int fd, LLONG time, bool disassemble, bool load_offset)
+void end_last_caption(struct encoder_ctx *context, bool disassemble)
 {
-	if (load_offset)
-		time = MAX(time - 1150, 0);
+	if (!context->scc_last_end_time)
+		return;
 
-	struct ccx_scc_timecode timecode = get_timecode(time);
-	write_timecode(fd, timecode, disassemble);
-}
+	write_timecode(context->out->fh, *context->scc_last_end_time, disassemble);
 
-void clear_screen(int fd, struct ccx_scc_timecode end_time, int channel, bool disassemble)
-{
 	unsigned int bytes_written = 0;
-	write_timecode(fd, end_time, disassemble);
-	write_control_code(fd, channel, EDM, disassemble, &bytes_written);
+	size_t len;
+	char *buf = buf_init(context, &len);
+	write_control_code(&buf, &len, context->scc_last_channel, EDM, disassemble, &bytes_written);
+	write(context->out->fh, context->subline, SUBLINESIZE - len);
 }
 
 int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encoder_ctx *context, bool disassemble)
@@ -575,14 +600,17 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 	int fd = context->out->fh;
 	int channel = data->channel;
 
-	// 1. Clear the last caption if necessary
+	// Clear the last caption if necessary
 	struct ccx_scc_timecode start_tc = get_timecode(data->start_time);
 	if (context->scc_last_end_time && !timecode_equals(*context->scc_last_end_time, start_tc))
-		clear_screen(fd, *context->scc_last_end_time, context->scc_last_channel, disassemble);
+		end_last_caption(context, disassemble);
 
-	// 2. Load the new caption ahead-of-time
-	write_timestamp(fd, data->start_time, disassemble, true);
-	write_control_code(fd, channel, RCL, disassemble, &bytes_written);
+	// Initialize the line buffer
+	size_t len;
+	char *buf = buf_init(context, &len);
+
+	// Load the new caption into the buffer
+	write_control_code(&buf, &len, channel, RCL, disassemble, &bytes_written);
 	for (uint8_t row = 0; row < 15; ++row)
 	{
 		// If there is nothing to display on this row, skip it.
@@ -630,30 +658,47 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 					tab_offset_code = get_tab_offset_code(column);
 				}
 
-				write_control_code(fd, channel, position_code, disassemble, &bytes_written);
+				write_control_code(&buf, &len, channel, position_code, disassemble, &bytes_written);
 				if (tab_offset_code)
-					write_control_code(fd, channel, tab_offset_code, disassemble, &bytes_written);
+					write_control_code(&buf, &len, channel, tab_offset_code, disassemble, &bytes_written);
 				if (switch_font || switch_color)
-					write_control_code(fd, channel, font_code, disassemble, &bytes_written);
+					write_control_code(&buf, &len, channel, font_code, disassemble, &bytes_written);
 
 				current_row = row;
 				current_column = column;
 				current_font = data->fonts[row][column];
 				current_color = data->colors[row][column];
 			}
-			write_character(fd, data->characters[row][column], disassemble, &bytes_written);
+			write_character(&buf, &len, data->characters[row][column], disassemble, &bytes_written);
 			++current_column;
 		}
-		check_padding(fd, disassemble, &bytes_written);
+		check_padding(&buf, &len, disassemble, &bytes_written);
 	}
 
-	// 3. Show the caption at the target time
-	write_timestamp(fd, data->start_time, disassemble, false);
-	write_control_code(fd, channel, RCL, disassemble, &bytes_written);
-	write_control_code(fd, channel, EOC, disassemble, &bytes_written);
-	write_control_code(fd, channel, ENM, disassemble, &bytes_written);
+	// Calculate time and write the line out to the fd
+	size_t line_written_len = SUBLINESIZE - len;
+	// Each frame can carry 2 bytes, which is 5 chars (4 bytes encoded in hex + space)
+	float offset = (line_written_len + 1) / 5 * (1000 / FPS);
+	struct ccx_scc_timecode load_tc = get_timecode(data->start_time - offset);
+	// Finally, write the line
+	write_timecode(fd, load_tc, disassemble);
+	write(fd, context->subline, line_written_len);
 
-	// 4. Save data from this caption
+	// Clear the line buffer for showing
+	buf = buf_init(context, &len);
+	bytes_written = 0;
+
+	// Show the caption at the target time
+	// We write this 1 frame ahead so that the EOC is delivered precisely on the target frame
+	struct ccx_scc_timecode show_tc = start_tc;
+	show_tc.frame -= 1;
+	write_timecode(fd, show_tc, disassemble);
+	write_control_code(&buf, &len, channel, RCL, disassemble, &bytes_written);
+	write_control_code(&buf, &len, channel, EOC, disassemble, &bytes_written);
+	write_control_code(&buf, &len, channel, ENM, disassemble, &bytes_written);
+	write(fd, context->subline, SUBLINESIZE - len);
+
+	// Save data from this caption
 	if (!context->scc_last_end_time)
 		context->scc_last_end_time = malloc(sizeof(*context->scc_last_end_time));
 	*context->scc_last_end_time = get_timecode(data->end_time);
@@ -680,8 +725,7 @@ int write_cc_buffer_as_scc(const struct eia608_screen *data, struct encoder_ctx 
 
 void write_scenarist_footer(struct encoder_ctx *context, bool disassemble)
 {
-	if (context->scc_last_end_time)
-		clear_screen(context->out->fh, *context->scc_last_end_time, context->scc_last_channel, disassemble);
+	end_last_caption(context, disassemble);
 }
 
 void write_scc_footer(struct encoder_ctx *context)

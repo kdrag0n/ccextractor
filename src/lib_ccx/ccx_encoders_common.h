@@ -51,6 +51,8 @@ struct ccx_scc_timecode
 	unsigned int minute;
 	unsigned int second;
 	float frame;
+
+	LLONG ts;
 };
 
 /**
