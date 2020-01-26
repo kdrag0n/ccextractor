@@ -169,7 +169,7 @@ struct encoder_ctx
 	int nospupngocr;
 
 	// SCC state
-	struct ccx_scc_timecode *scc_last_end_time;
+	struct ccx_scc_timecode scc_last_end_time;
 	struct ccx_scc_timecode scc_last_written_tc;
 	int scc_last_channel;
 };

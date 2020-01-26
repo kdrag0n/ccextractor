@@ -580,10 +580,10 @@ void write_timecode(struct encoder_ctx *context, struct ccx_scc_timecode tc, boo
 
 void end_last_caption(struct encoder_ctx *context, bool disassemble)
 {
-	if (!context->scc_last_end_time)
+	if (!context->scc_last_end_time.ts)
 		return;
 
-	write_timecode(context, *context->scc_last_end_time, disassemble);
+	write_timecode(context, context->scc_last_end_time, disassemble);
 
 	unsigned int bytes_written = 0;
 	size_t len;
@@ -604,7 +604,7 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 
 	// Clear the last caption if necessary
 	struct ccx_scc_timecode start_tc = get_timecode(data->start_time);
-	if (context->scc_last_end_time && !timecode_equals(*context->scc_last_end_time, start_tc))
+	if (!timecode_equals(context->scc_last_end_time, start_tc))
 		end_last_caption(context, disassemble);
 
 	// Initialize the line buffer
@@ -684,7 +684,7 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 	struct ccx_scc_timecode load_tc = get_timecode(data->start_time - offset);
 	// Make sure it doesn't go back in time
 	if (context->scc_last_written_tc.ts > load_tc.ts)
-		load_tc = get_timecode(context->scc_last_end_time->ts + (1000 / FPS));
+		load_tc = get_timecode(context->scc_last_end_time.ts + (1000 / FPS));
 	// Finally, write the line
 	write_timecode(context, load_tc, disassemble);
 	write(fd, context->subline, line_written_len);
@@ -704,9 +704,7 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 	write(fd, context->subline, SUBLINESIZE - len);
 
 	// Save data from this caption
-	if (!context->scc_last_end_time)
-		context->scc_last_end_time = malloc(sizeof(*context->scc_last_end_time));
-	*context->scc_last_end_time = get_timecode(data->end_time);
+	context->scc_last_end_time = get_timecode(data->end_time);
 	context->scc_last_channel = channel;
 
 	return 1;
