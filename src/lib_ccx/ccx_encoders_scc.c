@@ -568,12 +568,14 @@ bool timecode_equals(struct ccx_scc_timecode a, struct ccx_scc_timecode b)
 		fabsf(a.frame - b.frame) < 3;
 }
 
-void write_timecode(int fd, struct ccx_scc_timecode tc, bool disassemble)
+void write_timecode(struct encoder_ctx *context, struct ccx_scc_timecode tc, bool disassemble)
 {
+	int fd = context->out->fh;
 	write(fd, "\n\n", disassemble ? 1 : 2);
 
 	// SMPTE format
 	fdprintf(fd, "%02u:%02u:%02u:%02.f\t", tc.hour, tc.minute, tc.second, tc.frame);
+	context->scc_last_written_tc = tc;
 }
 
 void end_last_caption(struct encoder_ctx *context, bool disassemble)
@@ -581,7 +583,7 @@ void end_last_caption(struct encoder_ctx *context, bool disassemble)
 	if (!context->scc_last_end_time)
 		return;
 
-	write_timecode(context->out->fh, *context->scc_last_end_time, disassemble);
+	write_timecode(context, *context->scc_last_end_time, disassemble);
 
 	unsigned int bytes_written = 0;
 	size_t len;
@@ -680,8 +682,11 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 	// Each frame can carry 2 bytes, which is 5 chars (4 bytes encoded in hex + space)
 	float offset = (line_written_len + 1) / 5 * (1000 / FPS);
 	struct ccx_scc_timecode load_tc = get_timecode(data->start_time - offset);
+	// Make sure it doesn't go back in time
+	if (context->scc_last_written_tc.ts > load_tc.ts)
+		load_tc = get_timecode(context->scc_last_end_time->ts + (1000 / FPS));
 	// Finally, write the line
-	write_timecode(fd, load_tc, disassemble);
+	write_timecode(context, load_tc, disassemble);
 	write(fd, context->subline, line_written_len);
 
 	// Clear the line buffer for showing
@@ -692,7 +697,7 @@ int write_cc_buffer_as_scenarist(const struct eia608_screen *data, struct encode
 	// We write this 1 frame ahead so that the EOC is delivered precisely on the target frame
 	struct ccx_scc_timecode show_tc = start_tc;
 	show_tc.frame -= 1;
-	write_timecode(fd, show_tc, disassemble);
+	write_timecode(context, show_tc, disassemble);
 	write_control_code(&buf, &len, channel, RCL, disassemble, &bytes_written);
 	write_control_code(&buf, &len, channel, EOC, disassemble, &bytes_written);
 	write_control_code(&buf, &len, channel, ENM, disassemble, &bytes_written);
